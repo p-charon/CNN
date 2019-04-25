@@ -1,0 +1,82 @@
+-- THIS IS A GENERIC FIR FILTER GENERATOR 
+-- IT USES W1 BIT DATA/COEFFICIENTS BITS
+LIBRARY LPM;                     -- USING PREDEFINED PACKAGES
+USE LPM.LPM_COMPONENTS.ALL;
+
+LIBRARY IEEE;
+USE IEEE.STD_LOGIC_1164.ALL;
+USE IEEE.STD_LOGIC_ARITH.ALL;
+USE IEEE.STD_LOGIC_UNSIGNED.ALL;
+
+ENTITY FIR_GEN2 IS                      ------> INTERFACE
+  GENERIC (W1 : INTEGER := 11; -- INPUT BIT WIDTH 输入位宽
+           W2 : INTEGER := 10;-- MULTIPLIER BIT WIDTH 2*W1 乘法器位宽
+           W3 : INTEGER := 11;-- ADDER WIDTH = W2+LOG2(L)-1 加法器位宽
+           W4 : INTEGER := 11;-- OUTPUT BIT WIDTH  输出位宽
+           L  : INTEGER := 5; -- FILTER LENGTH 滤波器长度
+        MPIPE : INTEGER := 3-- PIPELINE STEPS OF MULTIPLIER  流水线级数
+           );
+  PORT ( CLK    : IN STD_LOGIC;
+         LOAD_X : IN  STD_LOGIC;
+         X_IN   : IN  STD_LOGIC_VECTOR(W1-1 DOWNTO 0);
+         C_IN   : IN  STD_LOGIC_VECTOR(W1-1 DOWNTO 0);
+         Y_OUT  : OUT STD_LOGIC_VECTOR(W4-1 DOWNTO 0));
+END FIR_GEN2;
+
+ARCHITECTURE FLEX OF FIR_GEN2 IS
+
+  SUBTYPE N1BIT IS STD_LOGIC_VECTOR(W1-1 DOWNTO 0);
+  SUBTYPE N2BIT IS STD_LOGIC_VECTOR(W2-1 DOWNTO 0);
+  SUBTYPE N3BIT IS STD_LOGIC_VECTOR(W3-1 DOWNTO 0);
+  TYPE ARRAY_N1BIT IS ARRAY (0 TO L-1) OF N1BIT;
+  TYPE ARRAY_N2BIT IS ARRAY (0 TO L-1) OF N2BIT;
+  TYPE ARRAY_N3BIT IS ARRAY (0 TO L-1) OF N3BIT;
+
+  SIGNAL  X  :  N1BIT;
+  SIGNAL  Y  :  N3BIT;
+  SIGNAL  C  :  ARRAY_N1BIT; -- COEFFICIENT ARRAY  系数矩阵
+  SIGNAL  P  :  ARRAY_N2BIT; -- PRODUCT ARRAY  积矩阵
+  SIGNAL  A  :  ARRAY_N3BIT; -- ADDER ARRAY   加法矩阵
+                                                        
+BEGIN
+
+  LOAD: PROCESS            ------> LOAD DATA OR COEFFICIENT  装载数据或系数
+  BEGIN
+    WAIT UNTIL CLK = '1';  
+    IF (LOAD_X = '0') THEN
+      C(L-1) <= C_IN;      -- STORE COEFFICIENT IN REGISTER 在寄存器存储系数
+      FOR I IN L-2 DOWNTO 0 LOOP  -- COEFFICIENTS SHIFT ONE  系数右移
+        C(I) <= C(I+1);
+      END LOOP;
+    ELSE
+      X <= X_IN;           -- GET ONE DATA SAMPLE AT A TIME  同时获得一个采样数据
+    END IF;
+  END PROCESS LOAD;
+
+
+  SOP: PROCESS (CLK)        ------> COMPUTE SUM-OF-PRODUCTS 进行乘加运算
+  BEGIN
+    IF CLK'EVENT AND (CLK = '1') THEN
+    FOR I IN 0 TO L-2  LOOP      -- COMPUTE THE TRANSPOSED 计算转置滤波器的加法
+      A(I) <= (P(I)(W2-1) & P(I)) + A(I+1); -- FILTER ADDS  加法运算后可能产生进位 扩展1位
+    END LOOP;
+    A(L-1) <= P(L-1)(W2-1) & P(L-1);     -- FIRST TAP HAS 第一级抽头
+    END IF;                              -- ONLY A REGISTER 只有一个寄存器
+    Y <= A(0);
+  END PROCESS SOP;
+
+  -- INSTANTIATE L PIPELINED MULTIPLIER 例化流水线
+  MULGEN: FOR I IN 0 TO L-1 GENERATE 
+  MULS: LPM_MULT               -- MULTIPLY P(I) = C(I) * X; 乘法运算
+        GENERIC MAP ( LPM_WIDTHA => W1, LPM_WIDTHB => W1, 
+                      LPM_PIPELINE => MPIPE,
+                      LPM_REPRESENTATION => "SIGNED", 
+                      LPM_WIDTHP => W2, 
+                      LPM_WIDTHS => W2)  
+        PORT MAP ( CLOCK => CLK, DATAA => X, 
+                   DATAB => C(I), RESULT => P(I));
+        END GENERATE;
+
+  Y_OUT <= Y; --去余 
+
+END FLEX;
